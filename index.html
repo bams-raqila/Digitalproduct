@@ -3,13 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-
-  <!-- Percepat koneksi ke AliExpress -->
   <link rel="dns-prefetch" href="//s.click.aliexpress.com">
   <link rel="preconnect" href="https://s.click.aliexpress.com" crossorigin>
-
   <meta name="referrer" content="no-referrer">
-  <title>MainDollar — AliExpress Auto Redirect + Back→CPM Round-Robin</title>
+  <title>MainDollar — Auto Affiliate + Back→CPM RR (v3)</title>
   <style>
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;margin:0}
     #disclosure{position:fixed;bottom:8px;right:8px;background:#000;color:#fff;padding:6px 10px;border-radius:8px;font-size:12px;opacity:.8;z-index:9999}
@@ -20,15 +17,12 @@
 
   <script>
   (function(){
-    /** ===================== CONFIG ===================== **/
     const CONFIG = {
-      AUTO_REDIRECT: true,          // tanam cookie affiliate sedini mungkin
-      CLICK_PARAM: "dp",            // nama param clickid di URL kamu (contoh: ?dp=ABC123)
-      BACK_BEHAVIOR: 'cpm_rr',      // 'cpm_rr' = setiap Back langsung redirect CPM (round-robin)
-      IDLE_MS: 0                    // tidak dipakai di mode ini (biar simple)
+      AUTO_REDIRECT: true,
+      CLICK_PARAM: "dp",
+      BACK_BEHAVIOR: "cpm_rr" // setiap kembali/back → redirect CPM round-robin
     };
 
-    // 10 LINK AFFILIATE KAMU (GANTI ke punyamu). w = bobot.
     const AFFILIATES = [
       { url:"https://s.click.aliexpress.com/e/_oDx3tmm", w:1 },
       { url:"https://s.click.aliexpress.com/e/_olWcXxu", w:1 },
@@ -42,142 +36,135 @@
       { url:"https://s.click.aliexpress.com/e/_oCiANCE", w:1 },
     ];
 
-    // 2 LINK CPM/CPA — akan diputar bergantian tiap Back
     const CPM_OFFERS = [
-      { url:"https://sophisticatedappearance.com/bl3wV.0/P/3qpkvYblm/VLJOZfD/0Z1/OsD/QsyzOLTnIK3ZL/TuU/4wNMDzIo5iMQj/gX" },
-      { url:"https://sophisticatedappearance.com/bl3wV.0/P/3qpkvYblm/VLJOZfD/0Z1/OsD/QsyzOLTnIK3ZL/TuU/4wNMDzIo5iMQj/gX" },
+      { url:"https://poawooptugroo.com/4/7985166?sub=exit" },
+      { url:"https://poawooptugroo.com/4/8035972?sub=exit" },
     ];
 
-    /** ===================== HELPERS ===================== **/
-    const isAndroid = /Android/i.test(navigator.userAgent);
-    const PREVIEW_UA = /bot|crawl|slurp|spider|facebookexternalhit|preview|whatsapp|telegram|discord|vkShare|LinkPreview/i;
-
+    /** ========= helpers ========= **/
+    const isAndroid=/Android/i.test(navigator.userAgent);
+    const PREVIEW_UA=/bot|crawl|slurp|spider|facebookexternalhit|preview|whatsapp|telegram|discord|vkShare|LinkPreview/i;
     function isPreviewBot(){ return PREVIEW_UA.test(navigator.userAgent); }
-    function isDebugMode(){ return new URLSearchParams(location.search).get("debug")==="1"; }
-
-    // Deteksi balik dari AliExpress (untuk trigger Back→CPM juga saat page kembali tampil)
-    function cameBackFromAli(){
-      try {
-        const nav = performance.getEntriesByType('navigation')[0];
-        if (nav && nav.type === 'back_forward') return true;
-      } catch(_){}
-      const ref = document.referrer || "";
-      return /aliexpress\.com|s\.click\.aliexpress\.com/i.test(ref);
+    function isDebug(){ return new URLSearchParams(location.search).get("debug")==="1"; }
+    function getClickId(){
+      const sp=new URLSearchParams(location.search);
+      return sp.get(CONFIG.CLICK_PARAM)||sp.get("sub1")||sp.get("aff_sub")||"";
     }
-
-    function getClickId() {
-      const sp = new URLSearchParams(location.search);
-      return sp.get(CONFIG.CLICK_PARAM) || sp.get("sub1") || sp.get("aff_sub") || "";
-    }
-    const CLICK_ID = getClickId();
+    const CLICK_ID=getClickId();
 
     function injectClickId(url){
-      try {
-        const u = new URL(url);
-        if (CLICK_ID) u.searchParams.set(CONFIG.CLICK_PARAM, CLICK_ID);
-        return u.toString();
-      } catch(_){
-        if (!CLICK_ID) return url;
-        return url + (url.includes('?') ? '&' : '?') + `${CONFIG.CLICK_PARAM}=${encodeURIComponent(CLICK_ID)}`;
-      }
+      try{ const u=new URL(url); if(CLICK_ID) u.searchParams.set(CONFIG.CLICK_PARAM, CLICK_ID); return u.toString(); }
+      catch(_){ if(!CLICK_ID) return url; return url+(url.includes('?')?'&':'?')+`${CONFIG.CLICK_PARAM}=${encodeURIComponent(CLICK_ID)}`; }
     }
 
     function pickWeighted(pool){
-      const tot = pool.reduce((s,i)=>s+(i.w||1),0);
-      let r = Math.random()*tot;
-      for(const it of pool){ r -= (it.w||1); if(r<=0) return it; }
+      const tot=pool.reduce((s,i)=>s+(i.w||1),0);
+      let r=Math.random()*tot;
+      for(const it of pool){ r-=(it.w||1); if(r<=0) return it; }
       return pool[pool.length-1];
     }
 
-    // Rotasi non-ulang per sesi untuk affiliate
-    const USED_KEY = "md_aff_used_v1";
-    function pickWeightedNoRepeat(pool, key="url"){
-      let used = [];
-      try { used = JSON.parse(sessionStorage.getItem(USED_KEY) || "[]"); } catch(_){}
-      const candidates = pool.filter(p => !used.includes(p[key]));
-      const pickFrom = candidates.length ? candidates : pool;
-
-      const tot = pickFrom.reduce((s,i)=>s+(i.w||1),0);
-      let r = Math.random()*tot, chosen = pickFrom[pickFrom.length-1];
-      for(const it of pickFrom){ r -= (it.w||1); if(r<=0){ chosen = it; break; } }
-
-      const newUsed = (candidates.length ? used : []).concat([chosen[key]]);
-      try { sessionStorage.setItem(USED_KEY, JSON.stringify(newUsed)); } catch(_){}
+    // rotasi non-ulang per sesi untuk affiliate
+    const USED_KEY="md_aff_used_v1";
+    function pickWeightedNoRepeat(pool,key="url"){
+      let used=[]; try{ used=JSON.parse(sessionStorage.getItem(USED_KEY)||"[]"); }catch(_){}
+      const candidates=pool.filter(p=>!used.includes(p[key]));
+      const pickFrom=candidates.length?candidates:pool;
+      const tot=pickFrom.reduce((s,i)=>s+(i.w||1),0);
+      let r=Math.random()*tot, chosen=pickFrom[pickFrom.length-1];
+      for(const it of pickFrom){ r-=(it.w||1); if(r<=0){ chosen=it; break; } }
+      const newUsed=(candidates.length?used:[]).concat([chosen[key]]);
+      try{ sessionStorage.setItem(USED_KEY, JSON.stringify(newUsed)); }catch(_){}
       return chosen;
     }
 
-    // Round-robin CPM: 0→1→0→1 ...
-    function pickCpmRoundRobin(){
-      let idx = 0;
-      try { idx = parseInt(sessionStorage.getItem("md_cpm_idx")||"0",10) || 0; } catch(_){}
-      const offer = CPM_OFFERS[idx % CPM_OFFERS.length];
-      try { sessionStorage.setItem("md_cpm_idx", String((idx+1) % CPM_OFFERS.length)); } catch(_){}
+    // round-robin CPM
+    function pickCpmRR(){
+      let idx=0; try{ idx=parseInt(sessionStorage.getItem("md_cpm_idx")||"0",10)||0; }catch(_){}
+      const offer=CPM_OFFERS[idx % CPM_OFFERS.length];
+      try{ sessionStorage.setItem("md_cpm_idx", String((idx+1)%CPM_OFFERS.length)); }catch(_){}
       return offer;
     }
 
-    // Buka app AliExpress (Android) + fallback web
+    // throttle supaya gak double-trigger
+    function recently(ms){ const t=Date.now(); const last=parseInt(sessionStorage.getItem("md_last_action")||"0",10); return (t-last)<ms; }
+    function stamp(){ try{ sessionStorage.setItem("md_last_action", String(Date.now())); }catch(_){ } }
+
     function goAli(urlWeb){
-      const finalWeb = injectClickId(urlWeb);
-      if (isAndroid) {
-        const appScheme = "aliexpress://goto?url=" + encodeURIComponent(finalWeb);
-        const f = document.createElement('iframe');
-        f.style.display='none'; f.src = appScheme; document.body.appendChild(f);
-        setTimeout(()=>{ location.href = finalWeb; }, 350);
-      } else {
-        location.href = finalWeb;
+      const finalWeb=injectClickId(urlWeb);
+      try{ sessionStorage.setItem("md_leaving_to_aff","1"); }catch(_){}
+      if(isAndroid){
+        const appScheme="aliexpress://goto?url="+encodeURIComponent(finalWeb);
+        const f=document.createElement('iframe'); f.style.display='none'; f.src=appScheme; document.body.appendChild(f);
+        setTimeout(()=>{ location.href=finalWeb; },350);
+      }else{
+        location.href=finalWeb;
       }
     }
 
-    // Tracking ringan (opsional — aktifkan endpointmu jika ada)
-    function track(ev, extra={}){
-      const payload = { ev, ts: Date.now(), path: location.pathname, ...extra };
-      try {
-        navigator.sendBeacon && navigator.sendBeacon("/exit-trk", new Blob([JSON.stringify(payload)], {type:"application/json"}));
-      } catch(_){}
+    function toCPM(reason){
+      if (recently(600)) return; // cegah double redirect
+      const offer=pickCpmRR();
+      if(!offer||!offer.url) return;
+      stamp();
+      location.href=offer.url;
     }
 
-    // Dorong satu dummy state biar Back bisa kita tangkap (popstate)
+    // dorong satu state biar back bisa di-hook
     try{ history.pushState({x:1},"",location.href); }catch(_){}
 
-    /** ============== AUTO REDIRECT (cookie planting) ============== **/
-    window.addEventListener("DOMContentLoaded", function(){
-      if (!CONFIG.AUTO_REDIRECT) return;
-      if (isPreviewBot() || isDebugMode()) return;
+    /** ======= AUTO REDIRECT (cookie planting) ======= **/
+    window.addEventListener("DOMContentLoaded", ()=>{
+      if(!CONFIG.AUTO_REDIRECT) return;
+      if(isPreviewBot()||isDebug()) return;
 
-      // Back dari Ali? Jangan tanam cookie lagi; langsung jalankan BACK_BEHAVIOR
-      if (cameBackFromAli()) {
-        handleBackBehavior("return_from_ali");
+      // kalau balik dari Ali/app → langsung jalankan back-behavior
+      const ref=document.referrer||"";
+      const backForward=(()=>{ try{ const n=performance.getEntriesByType('navigation')[0]; return n && n.type==='back_forward'; } catch(_){ return false; }})();
+      const leaving=sessionStorage.getItem("md_leaving_to_aff")==="1";
+
+      if (backForward || /aliexpress\.com|s\.click\.aliexpress\.com/i.test(ref) || leaving){
+        try{ sessionStorage.removeItem("md_leaving_to_aff"); }catch(_){}
+        if (CONFIG.BACK_BEHAVIOR==="cpm_rr") toCPM("domcontent_return");
         return;
       }
 
-      // Hindari auto-redirect berulang di 1 sesi
-      if (sessionStorage.getItem("md_ran_redirect") === "1") return;
-
-      const aff = pickWeightedNoRepeat(AFFILIATES);
-      if (aff && aff.url) {
-        track("auto_redirect", {to: aff.url});
+      if (sessionStorage.getItem("md_ran_redirect")==="1") return;
+      const aff=pickWeightedNoRepeat(AFFILIATES);
+      if(aff&&aff.url){
         sessionStorage.setItem("md_ran_redirect","1");
         goAli(aff.url);
       }
     });
 
-    /** ============== BACK → CPM (round-robin) ============== **/
-    function handleBackBehavior(reason){
-      if (CONFIG.BACK_BEHAVIOR === 'cpm_rr') {
-        const offer = pickCpmRoundRobin();
-        if (offer && offer.url) {
-          track('back_cpm_redirect', {to: offer.url, reason});
-          location.href = offer.url; // same-tab → minim blokir popunder
-          return;
+    /** ======= Back / Return detection ======= **/
+    // 1) Tombol Back (history traversal)
+    window.addEventListener("popstate", ()=>{ if(CONFIG.BACK_BEHAVIOR==="cpm_rr") toCPM("popstate"); });
+
+    // 2) pageshow saat kembali dari bfcache/back
+    window.addEventListener("pageshow", (e)=>{
+      if (isPreviewBot()||isDebug()) return;
+      // hanya saat kembali (persisted) atau sebelumnya memang meninggalkan halaman
+      const left=sessionStorage.getItem("md_leaving_to_aff")==="1";
+      if (e.persisted || left){
+        try{ sessionStorage.removeItem("md_leaving_to_aff"); }catch(_){}
+        if(CONFIG.BACK_BEHAVIOR==="cpm_rr") toCPM("pageshow");
+      }
+    });
+
+    // 3) visibilitychange (kembali dari app intent)
+    document.addEventListener("visibilitychange", ()=>{
+      if (document.visibilityState==="visible"){
+        if (isPreviewBot()||isDebug()) return;
+        const left=sessionStorage.getItem("md_leaving_to_aff")==="1";
+        if (left && CONFIG.BACK_BEHAVIOR==="cpm_rr") {
+          try{ sessionStorage.removeItem("md_leaving_to_aff"); }catch(_){}
+          toCPM("visibility_return");
         }
       }
-      // fallback: no-op
-    }
+    });
 
-    // Tangkap Back (popstate)
-    window.addEventListener("popstate", function(){ handleBackBehavior("popstate"); });
-
-    // Tutup disclosure setelah 8 detik
+    // sembunyikan disclosure
     setTimeout(()=>{ const d=document.getElementById("disclosure"); if(d) d.style.display="none"; }, 8000);
   })();
   </script>
@@ -193,4 +180,3 @@
   <noscript><a href="/" target="_blank"><img src="//sstatic1.histats.com/0.gif?4802816&101" alt="" border="0"></a></noscript>
 </body>
 </html>
-
