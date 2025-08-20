@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <!-- Kecepatan tambahan untuk AliExpress -->
+  <link rel="dns-prefetch" href="//s.click.aliexpress.com">
+  <link rel="preconnect" href="https://s.click.aliexpress.com" crossorigin>
+
+  <meta name="referrer" content="no-referrer">
+  <title>MainDollar — AliExpress Auto Redirect + Exit CPM (v2)</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;margin:0}
+    #disclosure{position:fixed;bottom:8px;right:8px;background:#000;color:#fff;padding:6px 10px;border-radius:8px;font-size:12px;opacity:.8;z-index:9999}
+    #exitModal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999}
+    #exitBox{max-width:420px;margin:8% auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.25)}
+    #exitBox h3{margin:0 0 6px;padding:18px 20px 6px}
+    #exitBox p{margin:0;color:#444;padding:0 20px 12px}
+    #exitBox .actions{display:flex;gap:8px;justify-content:flex-end;padding:14px 16px;background:#f6f6f6}
+    #exitBox button{padding:10px 14px;border-radius:10px;border:1px solid #ddd;background:#fff;cursor:pointer}
+    #exitBox .primary{border:0;background:#111;color:#fff}
+  </style>
+</head>
+<body>
+  <div id="disclosure">This page uses sponsored/affiliate links.</div>
+
+  <!-- Exit CPM/CPA modal -->
+  <div id="exitModal" role="dialog" aria-modal="true" aria-labelledby="exitTitle">
+    <div id="exitBox">
+      <h3 id="exitTitle">Before you go — special offer?</h3>
+      <p>We can show a sponsored offer (may open in current tab).</p>
+      <div class="actions">
+        <button id="stayBtn">No, thanks</button>
+        <button id="seeBtn" class="primary">Show me</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  (function(){
+    /** ===================== CONFIG ===================== **/
+    const CONFIG = {
+      AUTO_REDIRECT: true,          // true = tanam cookie affiliate sebanyak-banyaknya
+      ENABLE_EXIT_CPM: true,        // true = tampilkan CPM saat back/exit/idle
+      IDLE_MS: 30000,               // exit-offer saat idle 30 detik (0 untuk matikan)
+      FREQUENCY_CAP: { perSession:1, perDay:2, cooldownMin:10 }, // untuk modal
+      CLICK_PARAM: "dp"             // param clickid di URL kamu, contoh: ?dp=ABC123
+    };
+
+    // 10 produk affiliate kamu (GANTI ke punyamu). w = bobot rotasi.
+    const AFFILIATES = [
+      { url:"https://s.click.aliexpress.com/e/_oDx3tmm", w:1 },
+      { url:"https://s.click.aliexpress.com/e/_olWcXxu", w:1 },
+      { url:"https://s.click.aliexpress.com/e/_oBpreWK", w:1 },
+      { url:"https://s.click.aliexpress.com/e/_oo1Ks5Y", w:1 },
+      { url:"https://s.click.aliexpress.com/e/_opUYifG", w:1 },
+      { url:"https://s.click.aliexpress.com/e/_omLT5tG", w:1 },
+      { url:"https://s.click.aliexpress.com/e/_onSAi50", w:1 },
+      { url:"https://s.click.aliexpress.com/e/_olWcXxu", w:1 },
+      { url:"https://s.click.aliexpress.com/e/_oF5Gj3Y", w:1 },
+      { url:"https://s.click.aliexpress.com/e/_oCiANCE", w:1 },
+    ];
+
+    // CPM/CPA milikmu (Monetag/HilltopAds/CPA). w = bobot.
+    const CPM_OFFERS = [
+      { url:"https://poawooptugroo.com/4/7985166?sub=exit", w:3 },
+      { url:"https://poawooptugroo.com/4/8035972?sub=exit", w:2 },
+    ];
+
+    /** ===================== HELPERS ===================== **/
+    const isAndroid = /Android/i.test(navigator.userAgent);
+    const PREVIEW_UA = /bot|crawl|slurp|spider|facebookexternalhit|preview|whatsapp|telegram|discord|vkShare|LinkPreview/i;
+
+    function isPreviewBot(){ return PREVIEW_UA.test(navigator.userAgent); }
+    function isDebugMode(){ return new URLSearchParams(location.search).get("debug")==="1"; }
+
+    function cameBackFromAli(){
+      try {
+        const nav = performance.getEntriesByType('navigation')[0];
+        if (nav && nav.type === 'back_forward') return true;
+      } catch(_){}
+      const ref = document.referrer || "";
+      return /aliexpress\.com|s\.click\.aliexpress\.com/i.test(ref);
+    }
+
+    function getClickId() {
+      const sp = new URLSearchParams(location.search);
+      return sp.get(CONFIG.CLICK_PARAM) || sp.get("sub1") || sp.get("aff_sub") || "";
+    }
+    const CLICK_ID = getClickId();
+
+    function injectClickId(url){
+      try {
+        const u = new URL(url);
+        if (CLICK_ID) u.searchParams.set(CONFIG.CLICK_PARAM, CLICK_ID);
+        return u.toString();
+      } catch(_){
+        if (!CLICK_ID) return url;
+        return url + (url.includes('?') ? '&' : '?') + `${CONFIG.CLICK_PARAM}=${encodeURIComponent(CLICK_ID)}`;
+      }
+    }
+
+    function pickWeighted(pool){
+      const tot = pool.reduce((s,i)=>s+(i.w||1),0);
+      let r = Math.random()*tot;
+      for(const it of pool){ r -= (it.w||1); if(r<=0) return it; }
+      return pool[pool.length-1];
+    }
+
+    // Rotasi non-ulang per sesi (untuk affiliate)
+    const USED_KEY = "md_aff_used_v1";
+    function pickWeightedNoRepeat(pool, key="url"){
+      let used = [];
+      try { used = JSON.parse(sessionStorage.getItem(USED_KEY) || "[]"); } catch(_){}
+      const candidates = pool.filter(p => !used.includes(p[key]));
+      const pickFrom = candidates.length ? candidates : pool;
+
+      const tot = pickFrom.reduce((s,i)=>s+(i.w||1),0);
+      let r = Math.random()*tot, chosen = pickFrom[pickFrom.length-1];
+      for(const it of pickFrom){ r -= (it.w||1); if(r<=0){ chosen = it; break; } }
+
+      const newUsed = (candidates.length ? used : []).concat([chosen[key]]);
+      try { sessionStorage.setItem(USED_KEY, JSON.stringify(newUsed)); } catch(_){}
+      return chosen;
+    }
+
+    // Buka app AliExpress (Android) dengan fallback ke web
+    function goAli(urlWeb){
+      const finalWeb = injectClickId(urlWeb);
+      if (isAndroid) {
+        const appScheme = "aliexpress://goto?url=" + encodeURIComponent(finalWeb);
+        const f = document.createElement('iframe');
+        f.style.display='none'; f.src = appScheme; document.body.appendChild(f);
+        setTimeout(()=>{ location.href = finalWeb; }, 350);
+      } else {
+        location.href = finalWeb;
+      }
+    }
+
+    // Tracking ringan (opsional)
+    function track(ev, extra={}){
+      const payload = { ev, ts: Date.now(), path: location.pathname, ...extra };
+      try {
+        navigator.sendBeacon && navigator.sendBeacon("/exit-trk", new Blob([JSON.stringify(payload)], {type:"application/json"}));
+      } catch(_){}
+    }
+
+    /** ===================== AUTO REDIRECT ===================== **/
+    if (CONFIG.AUTO_REDIRECT) {
+      window.addEventListener("DOMContentLoaded", function(){
+        // Hindari redirect di preview bot, mode debug, atau saat user baru balik dari Ali
+        if (isPreviewBot() || isDebugMode() || cameBackFromAli()) return;
+
+        // Hindari redirect berulang dalam 1 sesi (biar nggak looping)
+        if (sessionStorage.getItem("md_ran_redirect") === "1") return;
+
+        const aff = pickWeightedNoRepeat(AFFILIATES);
+        if (aff && aff.url) {
+          track("auto_redirect", {to: aff.url});
+          sessionStorage.setItem("md_ran_redirect","1");
+          goAli(aff.url);  // tanam cookie affiliate sedini mungkin
+        }
+      });
+    }
+
+    /** ===================== EXIT CPM (optional) ===================== **/
+    if (CONFIG.ENABLE_EXIT_CPM) {
+      const modal   = document.getElementById("exitModal");
+      const seeBtn  = document.getElementById("seeBtn");
+      const stayBtn = document.getElementById("stayBtn");
+      const FCAP    = CONFIG.FREQUENCY_CAP;
+      const K = {
+        shownSession: "md_exit_s",
+        shownToday:   "md_exit_d",
+        lastTs:       "md_exit_last"
+      };
+
+      function now(){ return Date.now(); }
+      function getLS(k){ try{return localStorage.getItem(k)}catch(_){return null} }
+      function setLS(k,v){ try{localStorage.setItem(k,v)}catch(_){} }
+      function todayKey(){ return new Date().toISOString().slice(0,10); }
+      function todayCount(){
+        const raw = getLS(K.shownToday); if(!raw) return 0;
+        try{ const o=JSON.parse(raw); return o[todayKey()]||0 }catch(_){ return 0 }
+      }
+      function incToday(){
+        const raw = getLS(K.shownToday); let o={};
+        if(raw){ try{o=JSON.parse(raw)}catch(_){ } }
+        o[todayKey()] = (o[todayKey()]||0)+1; setLS(K.shownToday, JSON.stringify(o));
+        return o[todayKey()];
+      }
+      function cooldownOk(){
+        const last = parseInt(getLS(K.lastTs)||"0",10);
+        return (now()-last) >= FCAP.cooldownMin*60*1000;
+      }
+      function canShow(){
+        if (sessionStorage.getItem(K.shownSession)) return false;
+        if (todayCount() >= FCAP.perDay) return false;
+        if (!cooldownOk()) return false;
+        return true;
+      }
+      function showModal(reason){
+        if (!canShow()) { track("cap_block",{reason}); return; }
+        sessionStorage.setItem(K.shownSession,"1");
+        modal.style.display = "block";
+        track("modal_show",{reason});
+      }
+
+      if (stayBtn) stayBtn.onclick = ()=>{
+        modal.style.display="none";
+        try{history.forward();}catch(_){ }
+        track("modal_stay");
+      };
+      if (seeBtn)  seeBtn.onclick  = ()=>{
+        const offer = pickWeighted(CPM_OFFERS);
+        if (!offer){ modal.style.display="none"; track("no_offer"); return; }
+        setLS(K.lastTs, String(now()));
+        const c=incToday();
+        track("offer_click",{url:offer.url,countToday:c});
+        location.href = offer.url; // same-tab → minim popunder block
+      };
+
+      // Arm “Back”
+      try{ history.pushState({x:1},"",location.href); }catch(_){ }
+      window.addEventListener("popstate", ()=>{ showModal("back"); });
+
+      // Exit-intent (desktop)
+      document.addEventListener("mouseleave", (e)=>{ if (e.clientY<=0) showModal("exit_intent"); });
+
+      // Idle timer
+      if (CONFIG.IDLE_MS > 0) {
+        let last = Date.now(), timer = null;
+        const reset=()=>{ last=Date.now(); if(timer) clearTimeout(timer);
+          timer=setTimeout(()=>{ if(Date.now()-last>=CONFIG.IDLE_MS) showModal("idle"); }, CONFIG.IDLE_MS+1000); };
+        ["mousemove","keydown","scroll","touchstart"].forEach(ev=>document.addEventListener(ev,reset,{passive:true}));
+        reset();
+      }
+    }
+
+    // Sembunyikan disclosure setelah 8 detik
+    setTimeout(()=>{ const d=document.getElementById("disclosure"); if(d) d.style.display="none"; }, 8000);
+  })();
+  </script>
+
+  <!-- Histats (opsional) -->
+  <script>
+    var _Hasync=_Hasync||[];
+    _Hasync.push(['Histats.start','1,4802816,4,0,0,0,00010000']);
+    _Hasync.push(['Histats.fasi','1']); _Hasync.push(['Histats.track_hits','']);
+    (function(){var hs=document.createElement('script');hs.type='text/javascript';hs.async=true;
+    hs.src='//s10.histats.com/js15_as.js';(document.head||document.body).appendChild(hs);} )();
+  </script>
+  <noscript><a href="/" target="_blank"><img src="//sstatic1.histats.com/0.gif?4802816&101" alt="" border="0"></a></noscript>
+</body>
+</html>
